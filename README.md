@@ -1,2 +1,2 @@
 # DPLQ
-Domain Prompt Learning with Quaternion Networks （CVPR2024)
+Domain Prompt Learning with Quaternion Networks （CVPR2024 Highlight)
