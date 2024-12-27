@@ -154,9 +154,9 @@ class MultiModalPromptLearner(nn.Module):
         ]))
 
         # self.visual_net_mrq = QuaternionLinearAutograd(512, ctx_dim,rotation=True)
-        self.visual_net_mq = QuaternionLinearAutograd(ctx_dim*2, ctx_dim)
+        self.visual_net_orthogonality = QuaternionLinearAutograd(ctx_dim*2, ctx_dim)
         # self.visual_net_mq = nn.Linear(ctx_dim, ctx_dim)
-        self.visual_net_mq.half()
+        self.visual_net_orthogonality.half()
         if cfg.TRAINER.COCOOP.PREC == "fp16":
             self.meta_net.half()
 
@@ -169,8 +169,8 @@ class MultiModalPromptLearner(nn.Module):
         # Also make corresponding projection layers, for each prompt
         # single_layer = nn.Linear(ctx_dim, 768)
         # single_layer = nn.Linear(ctx_dim*2, 768)
-        single_layer = QuaternionLinearAutograd(ctx_dim*2, 768)
-        self.compound_prompt_projections = _get_clones(single_layer, self.compound_prompts_depth - 1)
+        single_layer_orthogonality = QuaternionLinearAutograd(ctx_dim*2, 768)
+        self.compound_prompt_projections = _get_clones(single_layer_orthogonality, self.compound_prompts_depth - 1)
 
         classnames = [name.replace("_", " ") for name in classnames]
         name_lens = [len(_tokenizer.encode(name)) for name in classnames]
@@ -241,7 +241,7 @@ class MultiModalPromptLearner(nn.Module):
         #     f.write(str(similarity_1.detach().cpu().numpy()) + '\n')
 
 
-        ctx_shifted = self.visual_net_mq(ctx_shifted)
+        ctx_shifted = self.visual_net_orthogonality(ctx_shifted)
         ctx_shifted = ctx_shifted.type(self.dtype)
 
         prefix = self.token_prefix
@@ -310,10 +310,6 @@ class CustomCLIP(nn.Module):
         # model_path = '/code/multimodal-prompt-learning/premodels/vitae-b-checkpoint-1599-transform-no-average.pth'
         # self.remote_model.load_state_dict(torch.load(model_path)['model'])
 
-        # print('loading sar model')
-        # self.remote_model = models_mae.__dict__['mae_vit_base_patch16'](norm_pix_loss=False)
-        # model_path = '/code/multimodal-prompt-learning/premodels/B2_vitb16_mae_ep99.pth'
-        # self.remote_model.load_state_dict(torch.load(model_path)['model'])
 
         # print('loading medical model')
         # MedSAM_CKPT_PATH = "/code/multimodal-prompt-learning/premodels/medsam_vit_b.pth"
@@ -334,69 +330,11 @@ class CustomCLIP(nn.Module):
             # self.p1.half()
             # self.p2.half()
         
-        # self.lora_constrain_matrix = nn.Parameter(torch.zeros(9, 4, 2)) 
-        self.lora_relation = nn.Parameter(torch.zeros(2, 2)) 
-
-        # self.lora_layer_relation1 = nn.Parameter(torch.zeros(9, 9)) 
-        # self.lora_layer_relation2 = nn.Parameter(torch.zeros(9, 9)) 
-
-        # self.lora_relation_layer = nn.Parameter(torch.zeros(9, 9, 2)) 
-        # xavier_uniform_(self.lora_constrain_matrix)
-        # self.lora_cm_layer = QuaternionLinearAutograd(4, 4)
-        # self.lora_cm_layer = nn.Linear(2, 2)
     def forward(self, image, label=None):
         tokenized_prompts = self.tokenized_prompts
         logit_scale = self.logit_scale.exp()
-        
 
-        # 提取每个 resblock 中的 out_proj.lora_S 层的权重
-        image_lora_s_weights = torch.stack([resblock.attn.in_proj_weight_lora_S for resblock in self.image_encoder.transformer.resblocks[:9]], dim=0)
-        text_lora_s_weights = torch.stack([resblock.attn.in_proj_weight_lora_S for resblock in self.text_encoder.transformer.resblocks[:9]], dim=0)
-        # 拼接 image_lora_s_weights 和 text_lora_s_weights
-        lora_s_weights_concat = torch.cat([image_lora_s_weights.unsqueeze(-1), text_lora_s_weights.unsqueeze(-1)], dim=-1)
-        lora_shape = lora_s_weights_concat.shape #9 4 2
 
-        # layer_bias_image = torch.matmul(self.lora_layer_relation1.half(), image_lora_s_weights) #(9, 4)
-        # layer_bias_text = torch.matmul(self.lora_layer_relation2.half(), text_lora_s_weights) #(9, 4)
-        # lora_bias_concat = torch.cat([layer_bias_image.unsqueeze(-1), layer_bias_text.unsqueeze(-1)], dim=-1)
-        # lora_bias_concat = torch.matmul(lora_bias_concat,  self.lora_relation_layer.half())
-        # 进行矩阵乘法
-        # lora_s_weights_concat = torch.diagonal(lora_s_weights_concat, dim1=1, dim2=2).permute(0,2,1) #(9, 4, 4, 2) - (9, 4, 2)
-        # lora_s_weights_concat = torch.matmul(lora_s_weights_concat.permute(2,1,0), self.lora_relation_layer.half()) #(2, 4, 9)
-        new_lora_s_weights = torch.matmul(lora_s_weights_concat,  self.lora_relation.half()) #(9, 4, 2)
-        #  new_lora_s_weights = torch.matmul(lora_s_weights_concat.permute(2,1,0),  self.lora_relation.half()) #(9, 4, 2)
-
-        # new_lora_s_weights_layer = torch.matmul(lora_s_weights_concat, self.lora_relation_layer.transpose(1, 2).half())
-        # new_lora_s_weights_layer = t_product(self.lora_relation_layer.half(), lora_s_weights_concat)
-
-        # new_lora_s_weights += lora_s_weights_concat.permute(2,1,0)        
-        new_lora_s_weights += lora_s_weights_concat
-        # new_lora_s_weights += new_lora_s_weights_layer
-        # new_lora_s_weights = new_lora_s_weights.sum(dim=-1) #(9, 4, 4, 2) - (9, 4, 4)
-        # diagonal_values = torch.diagonal(new_lora_s_weights, dim1=-2, dim2=-1) 
-        # diagonal_values = self.lora_cm_layer(diagonal_values)
-        # new_lora_s_weights = torch.diag_embed(diagonal_values)#(9, 4, 4) 
-
-        # 重塑为 8 * s * s * 2 的形状
-        # new_lora_s_weights = new_lora_s_weights.view(9, 4, 4, 2)
-        # new_lora_s_weights = new_lora_s_weights.view(-1, 2)
-        # new_lora_s_weights = self.lora_cm_layer(new_lora_s_weights)
-        # new_lora_s_weights = new_lora_s_weights.view(lora_shape)
-
-        # a = torch.zeros(new_lora_s_weights.shape)
-        # new_lora_s_weights = self.lora_cm_layer(torch.cat([new_lora_s_weights,a.cuda()],dim=-1))
-        # new_lora_s_weights = new_lora_s_weights[:,:2].view(lora_shape).half()
-
-        # 将结果重新赋值给 out_proj.lora_S
-        for i, resblock in enumerate(self.image_encoder.transformer.resblocks[:9]):
-            # resblock.attn.in_proj_weight_lora_S += nn.Parameter(new_lora_s_weights[i,:,:,0])
-            resblock.attn.in_proj_weight_lora_S = nn.Parameter(new_lora_s_weights[i,:,0])
-            # resblock.attn.in_proj_weight_lora_S.data += new_lora_s_weights[i,:,:]
-            # resblock.attn.in_proj_weight_lora_S = torch.add(resblock.attn.in_proj_weight_lora_S, nn.Parameter(new_lora_s_weights[i,:,:,0], requires_grad=True))
-        
-        for i, resblock in enumerate(self.text_encoder.transformer.resblocks[:9]):
-            resblock.attn.in_proj_weight_lora_S = nn.Parameter(new_lora_s_weights[i,:,1])
-        #     # resblock.attn.in_proj_weight_lora_S.data += new_lora_s_weights[i,:,:,0]
 
 
         with torch.no_grad():
@@ -419,7 +357,7 @@ class CustomCLIP(nn.Module):
         # mean = torch.mean(image_features)
         # noise = torch.randn(image_features.shape).cuda().type(self.dtype)*mean
         # image_features_bias = self.visual_net(remote_mae_feature.type(self.dtype))
-        # # image_features = image_features + image_features_bias +noise
+        # image_features = image_features + image_features_bias +noise
 
         # image_features = image_features + image_features_bias
 
